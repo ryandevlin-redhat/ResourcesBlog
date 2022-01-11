@@ -4,7 +4,7 @@ January 11th, 2022 | by Ryan Devlin
 
 [![Gauges](https://github.com/ryandevlin-redhat/ResourcesBlog/blob/main/AirplaneDashboard.jpg "Capacity planning can be complicated.")](#)
 
-*__Figure 1:__ Capacity planning can be complicated, courtesy of [Arie Wubben](https://unsplash.com/@condorito1953?utm_source=unsplash&utm_medium=referral&utm_content=creditCopyText) on [Unsplash](https://unsplash.com/photos/MHIw0nSxCR4)*
+*Capacity planning can be complicated, courtesy of [Arie Wubben](https://unsplash.com/@condorito1953?utm_source=unsplash&utm_medium=referral&utm_content=creditCopyText) on [Unsplash](https://unsplash.com/photos/MHIw0nSxCR4)*
 ## Introduction
 Requests and limits are mechanisms in OpenShift that are often overlooked and poorly understood. Ironically, they are critical not only for achieving optimal performance in a cluster, but also for extracting the greatest dollar value from the underlying hardware. When properly leveraging requests and limits, organizations can achieve excellent performance and scalability; therefore it is important that time is spent understanding these mechanisms in depth.
 
@@ -14,52 +14,62 @@ Requests and limits are mechanisms in OpenShift that are often overlooked and po
 Requests are the guaranteed resources a container or pod will be allocated at any time. The container/pod may use less than this value, but the scheduler will always assume this % of the total node resources are claimed by the container/pod. It is critical to understand that the value of a request is directly factored into the scheduling algorithm. CPU requests behave differently than memory requests. These differences are outlined below.
 
 ### CPU Requests
-CPU requests are the amount of CPU a container or pod is guaranteed to run with, measured in millicores. 1 core = 1000 millicores = 100ms of computing time every 100ms of real-world time. Basically millicores are fractional divisions of CPU compute time. The container/pod may use less than this value. The container/pod also is free to use infinitely more CPU than it requested, unless there is a CPU limit added to it. What’s tricky about CPU requests, is that each request contributes to a container/pod’s cpu_shares value. This is a fractional weight relative to other requests on a node which determines how excess CPU is distributed (1).
+CPU requests are the amount of CPU a container or pod is guaranteed to run with, measured in millicores. 1 core = 1000 millicores = 100ms of computing time every 100ms of real-world time. Basically millicores are fractional divisions of CPU compute time. The container/pod may use less than this value. The container/pod also is free to use infinitely more CPU than it requested, unless there is a CPU limit added to it. What’s tricky about CPU requests, is that each request contributes to a container/pod’s cpu_shares value. **This is a fractional weight relative to other requests on a node which determines how excess CPU is distributed [(1)](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#how-pods-with-resource-limits-are-run)**.
 
 The cpu_shares value is calculated as follows (Note: the request value is measured in CPU cores, this algorithm guarantees at least 2 for the cpu_shares value):
 ```
 	max(spec.containers[].resources.requests.cpu * 1024, 2)
 ```
-As an example, if a pod requests 500 millicores of CPU we have
+**As an example, if a pod requests 500 millicores of CPU we have:**
 ```
 	max(500m * 1024, 2) = max(0.5 * 1024, 2) = 512
 ```
 The implications of this are that requests directly correlate to a weight, the cpu_shares value. In periods of high CPU contention, the cpu_shares weight is used to determine how CPU time is distributed to the pods.
 
-For example
+**For example:**
 ```
 Pod #1 requests 1 core
 Pod #2 requests 500m
 Pod #3 requests 500m
 ```
-Therefore
+**Therefore:**
 ```
-	cpu_shares_1 = max(1000m * 1024, 2) = max(1 * 1024, 2) = 1024
-  cpu_shares_2 = max(500m * 1024, 2) = max(0.5 * 1024, 2) = 512
-  cpu_shares_3 = max(500m * 1024, 2) = max(0.5 * 1024, 2) = 512
+cpu_shares_1 = max(1000m * 1024, 2) = max(1 * 1024, 2) = 1024
+cpu_shares_2 = max(500m * 1024, 2) = max(0.5 * 1024, 2) = 512
+cpu_shares_3 = max(500m * 1024, 2) = max(0.5 * 1024, 2) = 512
 ```
-The majority of the time, some of the pods idle while others run. In this case any of the running pods are free to use up the excess CPU at will. One day in the future, all three pods try to burst up to 100% CPU usage. The CPU is divided between the pods as follows (2):
-```
-Pod #1 gets:  1024 / (1024 + 512 + 512) = 0.5 = 50% of the total CPU time available
-Pod #2 gets:  512 / (1024 + 512 + 512) = 0.25 = 25% of the total CPU time available
-Pod #3 gets:  512 / (1024 + 512 + 512) = 0.25 = 25% of the total CPU time available
-```
+The majority of the time, some of the pods idle while others run. In this case any of the running pods are free to use up the excess CPU at will. One day in the future, all three pods try to burst up to 100% CPU usage. The CPU is divided between the pods as follows [(2)](https://docs.docker.com/engine/reference/run/#cpu-share-constraint):
+
+<pre>
+<b>Pod #1 gets:</b>  1024 / (1024 + 512 + 512) = 0.5 = 50% of the total CPU time available
+<b>Pod #2 gets:</b>  512 / (1024 + 512 + 512) = 0.25 = 25% of the total CPU time available
+<b>Pod #3 gets:</b>  512 / (1024 + 512 + 512) = 0.25 = 25% of the total CPU time available
+</pre>
 
 In a multicore system, the process is the same, but the % of CPU time received is spread over multiple cores. Thus on a node with 8 cores, the pod #2 and #3 could each use 100% of a CPU core because this is less than their cpu_shares value of 25% of the total available compute resources.
 
-What this shows is that the requests control into how much CPU time containers will receive in times of cpu contention. It is important to understand that the weighting is relative to all the other containers on the node. Thus, pods requesting large amounts of CPU will dominate pods requesting smaller values of CPU during periods where there is a competition for CPU time.
+What this shows is that **the requests control into how much CPU time containers will receive in times of cpu contention**. It is important to understand that the weighting is relative to all the other containers on the node. Thus, pods requesting large amounts of CPU will dominate pods requesting smaller values of CPU during periods where there is a competition for CPU time.
 
 ### Memory Requests
-Memory requests are the amount of memory a container or pod is guaranteed to have available for use. The container/pod may use less than this value. It may also infinitely exceed this value unless there is a memory limit in place to cap it’s consumption. Once a container/pod exceeds its memory request OpenShift can no longer guarantee that the node has the memory capacity for the pod. If the memory on the node is exhausted (ie. from several other pods exceeding their requests), there is a possibility that the pod will be terminated. The factor that determines which pods are terminated in a low memory situation is called the Quality of Service class. Pods are prioritized based on the table shown here, which is covered in more detail below. If a limit is in place on the pod, and the pod exceeds that limit, it will be immediately terminated. This behavior is due to the fact that, unlike CPU, memory cannot be throttled.
+Memory requests are the amount of memory a container or pod is guaranteed to have available for use. The container/pod may use less than this value. It may also infinitely exceed this value unless there is a memory limit in place to cap it’s consumption. **Once a container/pod exceeds its memory request OpenShift can no longer guarantee that the node has the memory capacity for the pod**. If the memory on the node is exhausted (ie. from several other pods exceeding their requests), there is a possibility that the pod will be terminated. The factor that determines which pods are terminated in a low memory situation is called the Quality of Service class. Pods are prioritized based on the table shown here, which is covered in more detail below. If a limit is in place on the pod, and the pod exceeds that limit, it will be immediately terminated. This behavior is due to the fact that, unlike CPU, **memory cannot be throttled**.
 
 ## The Scheduling Process
-Before we cover how OpenShift limits work, it is important to discuss the scheduling process for pods. This is because, as stated above, requests in OpenShift directly influence how pods are scheduled in a cluster. Figure 1 illustrates the Kubernetes scheduling algorithm (3). Don’t worry about anything other than the filtering section.
-Fig. 1: The Kubernetes Scheduling Algorithm
+Before we cover how OpenShift limits work, it is important to discuss the scheduling process for pods. This is because, as stated above, requests in OpenShift directly influence how pods are scheduled in a cluster. **Figure 1** illustrates the Kubernetes scheduling algorithm [(3)](https://kubernetes.io/docs/concepts/scheduling-eviction/scheduling-framework/). Don’t worry about anything other than the filtering section.
 
-It is in the Filtering stage of the scheduling cycle that the set of nodes available for pod placement is reduced by applying several filtering plugins. One of these plugins is called “NodeResourcesFit” which analyzes each node to determine if it has the capability to support the resources the pod has requested. This includes scalar resources such as counts of certain kubernetes objects, but more importantly, it checks for availability of the hardware resources CPU, memory, and storage. Since OpenShift and Kubernetes are open source, we can see exactly how this works (4).
-Fig. 2: The NodeResourcesFit filter applied to nodes during scheduling
+[![Scheudling Algorithm](https://github.com/ryandevlin-redhat/ResourcesBlog/blob/main/SchedulingDiagram.png "Kubernetes scheduling algorithm.")](#)
 
-Translated to English, the conditional statements above say:
+*__Figure 1:__ The Kubernetes Scheduling Algorithm*
+
+It is in the Filtering stage of the scheduling cycle that **the set of nodes available for pod placement is reduced by applying several filtering plugins**. One of these plugins is called **`NodeResourcesFit`** which analyzes each node to determine if it has the capability to support the resources the pod has requested. This includes scalar resources such as counts of certain kubernetes objects, but more importantly, it checks for availability of the hardware resources CPU, memory, and storage. Since OpenShift and Kubernetes are open source, we can see exactly how this works [(4)](https://github.com/openshift/kubernetes/blob/68104e8f731c05015b0581c849f11f170a2e8855/pkg/scheduler/framework/plugins/noderesources/fit.go#L251).
+<p align="center">
+  <img src="https://github.com/ryandevlin-redhat/ResourcesBlog/blob/main/podRequestCode.png" />
+</p>
+
+*__Figure 2:__ The NodeResourcesFit filter applied to nodes during scheduling*
+<p align="center">
+  <img src="https://github.com/ryandevlin-redhat/ResourcesBlog/blob/main/CustomTextBox.png" />
+</p>
+
 Large requests reserve broad chunks of resources, regardless of whether or not those resources are utilized by the pods that requested them.
 
 ## Why Do We Care?
